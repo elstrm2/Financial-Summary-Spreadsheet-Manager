@@ -90,6 +90,30 @@ The system supports:
 - Automatic stablecoin detection
 - Rate caching for 1 hour
 
+## ⚠️ Known Issues and Limitations
+
+### Structure Validation Issues
+
+- Inconsistent validation of "Subtotal:" and "TOTAL:" entries - may incorrectly skip variations like "Subtotal" or "TOTA"
+- Group structure validation needs improvement. Current structure requirements:
+  ```
+  Group Name
+  - Subitem 1
+  - Subitem 2 (Label)
+  - Subitem 3
+  Subtotal:
+  ```
+  The validator sometimes fails to properly check this hierarchy
+
+### Planned Improvements
+
+- Add automatic format correction for common structural issues
+- Implement stricter group/subgroup relationship validation
+- Enhanced subtotal detection and validation
+- Smart case correction for standardized entries
+
+---
+
 ## 📜 License
 
 This project is licensed under the MIT License with a Non-Commercial Clause - see the [LICENSE.txt](LICENSE.txt) file for details.
