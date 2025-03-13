@@ -638,7 +638,7 @@ function updateExchangeData(sheet, mainCurrency, totalRowIndex, rates) {
       if (currentSection.length > 0) {
         data[i][1] = `=SUM(E${currentSection[0]}:E${currentSection[currentSection.length - 1]})`;
       }
-      if (!data[i][2]) {
+      if (data[i][2]?.toString().toUpperCase() !== mainCurrency) {
         data[i][2] = mainCurrency;
       }
       lastSubtotalRow = i;

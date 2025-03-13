@@ -31,6 +31,14 @@ A Google Apps Script project for managing financial data in Google Sheets with a
 2. Go to Extensions > Apps Script
 3. Copy the code from `main.js` into the script editor
 4. Save and reload your spreadsheet
+5. Set up the required trigger:
+   - In the Apps Script editor, click on "Triggers" in the left sidebar
+   - Click "+ Add Trigger" button
+   - Configure the trigger:
+     - Choose function: `initiateConversion`
+     - Select event source: "From spreadsheet"
+     - Select event type: "On edit"
+     - Click "Save"
 
 ## 📋 Sheet Structure
 
