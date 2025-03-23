@@ -27,11 +27,17 @@ A Google Apps Script project for managing financial data in Google Sheets with a
 
 ## 🚀 Getting Started
 
-1. Open your Google Spreadsheet
-2. Go to Extensions > Apps Script
-3. Copy the code from `main.js` into the script editor
-4. Save and reload your spreadsheet
-5. Set up the required trigger:
+1. Download `example.xlsx` from the GitHub repository
+2. Open Google Sheets (sheets.google.com)
+3. Create a new spreadsheet
+4. File > Import > Upload > Select the downloaded `example.xlsx`
+5. In the "Button" column, replace all TRUE/FALSE values with Google Sheets checkboxes:
+   - Select the entire "Button" column
+   - Right-click > Insert checkbox
+6. Go to Extensions > Apps Script
+7. Copy the code from `main.js` into the script editor
+8. Save and reload your spreadsheet
+9. Set up the required trigger:
    - In the Apps Script editor, click on "Triggers" in the left sidebar
    - Click "+ Add Trigger" button
    - Configure the trigger:
@@ -39,6 +45,32 @@ A Google Apps Script project for managing financial data in Google Sheets with a
      - Select event source: "From spreadsheet"
      - Select event type: "On edit"
      - Click "Save"
+10. Enable required API services:
+    - In the Apps Script editor, click on "Services" in the left sidebar
+    - Click "+ Add Service" button
+    - Find and enable "Google Sheets API"
+    - Click "Add"
+    - Save the script
+11. Configure the manifest file:
+    - In the Apps Script editor, click on `appsscript.json` in the left sidebar
+    - Replace the contents with:
+    ```json
+    {
+      "timeZone": "UTC",
+      "runtimeVersion": "V8",
+      "exceptionLogging": "STACKDRIVER",
+      "dependencies": {
+        "enabledAdvancedServices": [
+          {
+            "userSymbol": "Sheets",
+            "version": "v4",
+            "serviceId": "sheets"
+          }
+        ]
+      }
+    }
+    ```
+12. When first running the script, grant the requested permissions
 
 ## 📋 Sheet Structure
 
