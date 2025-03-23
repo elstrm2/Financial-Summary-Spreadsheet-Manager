@@ -12,320 +12,1419 @@ const CHECKBOX_ACTIONS = {
 const STABLECOIN_CACHE_KEY = "stablecoin_addresses";
 const CACHE_DURATION = 21600;
 
-function checkSheetStructure() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getSheetByName("Financial Summary");
-  if (!sheet) {
-    Browser.msgBox("❌ Error", "Financial Summary sheet not found!", Browser.Buttons.OK);
+const COLUMN_WIDTHS = {
+  1: 220,
+  2: 100,
+  3: 100,
+  4: 150,
+  5: 150,
+  6: 180,
+  7: 20,
+  8: 180,
+  9: 240,
+  10: 80,
+};
+
+const ROW_TYPES = {
+  MAIN_GROUP: {
+    name: "MAIN_GROUP",
+    requirements: {
+      prefix: "",
+      columnRules: {
+        A: { required: true, type: "string" },
+        B: { required: true, type: "empty" },
+        C: { required: true, type: "empty" },
+        D: { required: true, type: "empty" },
+        E: { required: true, type: "empty" },
+        F: { required: true, type: "empty" },
+      },
+    },
+  },
+  SUB_GROUP: {
+    name: "SUB_GROUP",
+    requirements: {
+      prefix: "- ",
+      columnRules: {
+        A: { required: true, type: "string" },
+        B: { required: true, type: "number" },
+        C: { required: true, type: "string" },
+        D: { required: false, type: "number" },
+        E: { required: false, type: "number" },
+        F: { required: false, type: "string" },
+      },
+    },
+  },
+  SUBTOTAL: {
+    name: "SUBTOTAL",
+    requirements: {
+      exactMatch: "Subtotal:",
+      columnRules: {
+        A: { required: true, type: "string" },
+        B: { required: true, type: "number" },
+        C: { required: true, type: "string" },
+        D: { required: true, type: "empty" },
+        E: { required: true, type: "empty" },
+        F: { required: true, type: "empty" },
+      },
+    },
+  },
+  TOTAL: {
+    name: "TOTAL",
+    requirements: {
+      exactMatch: "TOTAL:",
+      columnRules: {
+        A: { required: true, type: "string" },
+        B: { required: true, type: "number" },
+        C: { required: true, type: "string" },
+        D: { required: true, type: "empty" },
+        E: { required: true, type: "empty" },
+        F: { required: true, type: "empty" },
+      },
+    },
+  },
+};
+
+function checkInternalStructure(sheet) {
+  const errors = [];
+
+  try {
+    const totalRow = findTotalRow(sheet);
+    if (!totalRow) {
+      errors.push('Missing "TOTAL:" row');
+      return [false, errors];
+    }
+
+    const structure = parseSheetStructure(sheet, 2, totalRow);
+
+    validateStructure(structure, errors);
+
+    return [errors.length === 0, errors];
+  } catch (error) {
+    errors.push(`Critical error: ${error.message}`);
+    return [false, errors];
+  }
+}
+
+function findTotalRow(sheet) {
+  const lastRow = sheet.getLastRow();
+  const range = sheet.getRange(2, 1, lastRow - 1, 1);
+  const values = range.getValues();
+  let found = false;
+  let firstTotalRow = null;
+
+  for (let i = 0; i < values.length; i++) {
+    if (values[i][0] === "TOTAL:") {
+      if (!found) {
+        found = true;
+        firstTotalRow = i + 2;
+      } else {
+        throw new Error("Multiple TOTAL: rows found. Only one is allowed.");
+      }
+    }
+  }
+  return firstTotalRow;
+}
+
+function isCellEmpty(cell) {
+  const value = cell.getValue();
+  const formula = cell.getFormula();
+  if (value !== "" || formula !== "") {
+    return "Cell contains value or formula";
+  }
+
+  const textStyle = cell.getTextStyle();
+  if (textStyle.isBold()) return "Cell has bold formatting";
+  if (textStyle.isItalic()) return "Cell has italic formatting";
+  if (textStyle.isUnderline()) return "Cell has underline formatting";
+  if (textStyle.isStrikethrough()) return "Cell has strikethrough formatting";
+
+  if (cell.getFontFamily() !== "Arial") {
+    return `Wrong font family: ${cell.getFontFamily()} (should be Arial)`;
+  }
+  if (cell.getFontSize() !== 10) {
+    return `Wrong font size: ${cell.getFontSize()} (should be 10)`;
+  }
+  if (cell.getFontColor() !== "#000000") {
+    return `Wrong font color: ${cell.getFontColor()} (should be #000000)`;
+  }
+
+  if (cell.getHorizontalAlignment() !== "center") {
+    return "Cell is not center-aligned horizontally";
+  }
+  if (cell.getVerticalAlignment() !== "middle") {
+    return "Cell is not center-aligned vertically";
+  }
+
+  if (cell.getBackground() !== "#ffffff") {
+    return `Wrong background color: ${cell.getBackground()} (should be #ffffff)`;
+  }
+
+  const richText = cell.getRichTextValue();
+  if (richText && richText.getText() !== "") {
+    return "Cell contains rich text formatting";
+  }
+
+  const note = cell.getNote();
+  if (note && note !== "") {
+    return "Cell contains note";
+  }
+
+  const dataValidation = cell.getDataValidation();
+  if (dataValidation !== null) {
+    return "Cell contains data validation";
+  }
+
+  if (formula.toLowerCase().includes("=hyperlink(")) {
+    return "Cell contains hyperlink";
+  }
+
+  const sheet = cell.getSheet();
+  const drawings = sheet.getDrawings();
+  const cellColumn = cell.getColumn();
+  const cellRow = cell.getRow();
+
+  for (const drawing of drawings) {
+    const anchor = drawing.getContainerInfo();
+    if (anchor.getAnchorColumn() === cellColumn - 1 && anchor.getAnchorRow() === cellRow - 1) {
+      return "Cell contains drawing or image";
+    }
+  }
+
+  const rules = sheet.getConditionalFormatRules();
+  for (const rule of rules) {
+    const ranges = rule.getRanges();
+    for (const range of ranges) {
+      if (range.getA1Notation().includes(cell.getA1Notation())) {
+        return "Cell has conditional formatting";
+      }
+    }
+  }
+
+  return true;
+}
+
+function parseSheetStructure(sheet, startRow, totalRow) {
+  const structure = {
+    groups: [],
+    totalRow: totalRow,
+  };
+
+  let currentRow = startRow;
+  while (currentRow < totalRow) {
+    const rowValues = sheet.getRange(currentRow, 1, 1, 6).getValues()[0];
+    const category = rowValues[0].toString();
+
+    if (!category.startsWith("-") && category !== "Subtotal:") {
+      const group = parseGroup(sheet, currentRow, totalRow);
+      structure.groups.push(group);
+      currentRow = group.endRow + 1;
+    } else {
+      currentRow++;
+    }
+  }
+
+  return structure;
+}
+
+function parseGroup(sheet, startRow, totalRow) {
+  const group = {
+    name: sheet.getRange(startRow, 1).getValue(),
+    subgroups: [],
+    startRow: startRow,
+    endRow: null,
+  };
+
+  let currentRow = startRow + 1;
+  while (currentRow < totalRow) {
+    const value = sheet.getRange(currentRow, 1).getValue().toString();
+
+    if (value === "Subtotal:") {
+      group.endRow = currentRow;
+      break;
+    }
+
+    if (value.startsWith("-")) {
+      group.subgroups.push({
+        name: value,
+        row: currentRow,
+      });
+    } else if (value && !value.startsWith("-")) {
+      currentRow--;
+      group.endRow = currentRow;
+      break;
+    }
+
+    currentRow++;
+  }
+
+  return group;
+}
+
+function validateTextFormatting(structure, errors) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Financial Summary");
+
+  const totalRow = structure.totalRow;
+  validateTotalRowFormatting(sheet, totalRow, errors);
+
+  structure.groups.forEach((group) => {
+    validateMainGroupFormatting(sheet, group.startRow, errors);
+
+    group.subgroups.forEach((subgroup) => {
+      validateSubgroupFormatting(sheet, subgroup.row, errors);
+    });
+
+    if (group.endRow) {
+      validateSubtotalFormatting(sheet, group.endRow, errors);
+    }
+  });
+}
+
+function validateTotalRowFormatting(sheet, row, errors) {
+  validateCellFormatting(
+    sheet,
+    row,
+    1,
+    {
+      fontFamily: "Arial",
+      fontSize: 10,
+      isBold: true,
+      isItalic: false,
+      isUnderline: false,
+      isStrikethrough: false,
+      horizontalAlignment: "left",
+      verticalAlignment: "middle",
+    },
+    errors
+  );
+
+  validateCellFormatting(
+    sheet,
+    row,
+    2,
+    {
+      fontFamily: "Arial",
+      fontSize: 10,
+      isBold: true,
+      isItalic: false,
+      isUnderline: false,
+      isStrikethrough: false,
+      horizontalAlignment: "right",
+      verticalAlignment: "middle",
+    },
+    errors
+  );
+
+  validateCellFormatting(
+    sheet,
+    row,
+    3,
+    {
+      fontFamily: "Arial",
+      fontSize: 10,
+      isBold: true,
+      isItalic: false,
+      isUnderline: false,
+      isStrikethrough: false,
+      horizontalAlignment: "center",
+      verticalAlignment: "middle",
+    },
+    errors
+  );
+}
+
+function validateMainGroupFormatting(sheet, row, errors) {
+  validateCellFormatting(
+    sheet,
+    row,
+    1,
+    {
+      fontFamily: "Arial",
+      fontSize: 10,
+      isBold: true,
+      isItalic: false,
+      isUnderline: false,
+      isStrikethrough: false,
+      horizontalAlignment: "left",
+      verticalAlignment: "middle",
+    },
+    errors
+  );
+}
+
+function validateSubgroupFormatting(sheet, row, errors) {
+  validateCellFormatting(
+    sheet,
+    row,
+    1,
+    {
+      fontFamily: "Arial",
+      fontSize: 10,
+      isBold: false,
+      isItalic: false,
+      isUnderline: false,
+      isStrikethrough: false,
+      horizontalAlignment: "left",
+      verticalAlignment: "middle",
+    },
+    errors
+  );
+
+  validateCellFormatting(
+    sheet,
+    row,
+    2,
+    {
+      fontFamily: "Arial",
+      fontSize: 10,
+      isBold: false,
+      isItalic: false,
+      isUnderline: false,
+      isStrikethrough: false,
+      horizontalAlignment: "right",
+      verticalAlignment: "middle",
+    },
+    errors
+  );
+
+  validateCellFormatting(
+    sheet,
+    row,
+    3,
+    {
+      fontFamily: "Arial",
+      fontSize: 10,
+      isBold: false,
+      isItalic: false,
+      isUnderline: false,
+      isStrikethrough: false,
+      horizontalAlignment: "center",
+      verticalAlignment: "middle",
+    },
+    errors
+  );
+
+  [4, 5].forEach((col) => {
+    const cell = sheet.getRange(row, col);
+    if (cell.getValue()) {
+      validateCellFormatting(
+        sheet,
+        row,
+        col,
+        {
+          fontFamily: "Arial",
+          fontSize: 10,
+          isBold: false,
+          isItalic: false,
+          isUnderline: false,
+          isStrikethrough: false,
+          horizontalAlignment: "left",
+          verticalAlignment: "middle",
+        },
+        errors
+      );
+    }
+  });
+
+  const cellF = sheet.getRange(row, 6);
+  if (cellF.getValue()) {
+    validateCellFormatting(
+      sheet,
+      row,
+      6,
+      {
+        fontFamily: "Arial",
+        fontSize: 10,
+        isBold: false,
+        isItalic: true,
+        isUnderline: false,
+        isStrikethrough: false,
+        horizontalAlignment: "left",
+        verticalAlignment: "middle",
+      },
+      errors
+    );
+  }
+}
+
+function validateSubtotalFormatting(sheet, row, errors) {
+  validateCellFormatting(
+    sheet,
+    row,
+    1,
+    {
+      fontFamily: "Arial",
+      fontSize: 10,
+      isBold: false,
+      isItalic: true,
+      isUnderline: false,
+      isStrikethrough: false,
+      horizontalAlignment: "left",
+      verticalAlignment: "middle",
+    },
+    errors
+  );
+
+  validateCellFormatting(
+    sheet,
+    row,
+    2,
+    {
+      fontFamily: "Arial",
+      fontSize: 10,
+      isBold: false,
+      isItalic: true,
+      isUnderline: false,
+      isStrikethrough: false,
+      horizontalAlignment: "right",
+      verticalAlignment: "middle",
+    },
+    errors
+  );
+
+  validateCellFormatting(
+    sheet,
+    row,
+    3,
+    {
+      fontFamily: "Arial",
+      fontSize: 10,
+      isBold: false,
+      isItalic: true,
+      isUnderline: false,
+      isStrikethrough: false,
+      horizontalAlignment: "center",
+      verticalAlignment: "middle",
+    },
+    errors
+  );
+}
+
+function validateCellFormatting(sheet, row, col, expected, errors) {
+  const cell = sheet.getRange(row, col);
+  const textStyle = cell.getTextStyle();
+  const cellAddress = `${columnToLetter(col)}${row}`;
+
+  if (cell.getFontFamily() !== expected.fontFamily) {
+    errors.push(`${cellAddress}: Wrong font family (should be ${expected.fontFamily})`);
+  }
+
+  if (cell.getFontSize() !== expected.fontSize) {
+    errors.push(`${cellAddress}: Wrong font size (should be ${expected.fontSize})`);
+  }
+
+  if (textStyle.isBold() !== expected.isBold) {
+    errors.push(`${cellAddress}: ${expected.isBold ? "Should be bold" : "Should not be bold"}`);
+  }
+
+  if (textStyle.isItalic() !== expected.isItalic) {
+    errors.push(`${cellAddress}: ${expected.isItalic ? "Should be italic" : "Should not be italic"}`);
+  }
+
+  if ((cell.getFontLine() === "underline") !== expected.isUnderline) {
+    errors.push(`${cellAddress}: ${expected.isUnderline ? "Should be underlined" : "Should not be underlined"}`);
+  }
+
+  if ((cell.getFontLine() === "line-through") !== expected.isStrikethrough) {
+    errors.push(`${cellAddress}: ${expected.isStrikethrough ? "Should be strikethrough" : "Should not be strikethrough"}`);
+  }
+
+  if (cell.getHorizontalAlignment().toLowerCase() !== expected.horizontalAlignment) {
+    errors.push(`${cellAddress}: Wrong horizontal alignment (should be ${expected.horizontalAlignment})`);
+  }
+
+  if (cell.getVerticalAlignment().toLowerCase() !== expected.verticalAlignment) {
+    errors.push(`${cellAddress}: Wrong vertical alignment (should be ${expected.verticalAlignment})`);
+  }
+}
+
+function validateEmptyRowsAfterTotal(structure, errors) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Financial Summary");
+  const startRow = structure.totalRow + 1;
+  const endRow = 1000;
+  const range = sheet.getRange(startRow, 1, endRow - startRow + 1, 6);
+
+  const values = range.getValues();
+  const textStyles = range.getTextStyles();
+  const backgrounds = range.getBackgrounds();
+  const horizontalAlignments = range.getHorizontalAlignments();
+  const verticalAlignments = range.getVerticalAlignments();
+  const fontFamilies = range.getFontFamilies();
+  const fontSizes = range.getFontSizes();
+  const fontColors = range.getFontColors();
+  const dataValidations = range.getDataValidations();
+  const notes = range.getNotes();
+  const formulas = range.getFormulas();
+
+  const rules = sheet.getConditionalFormatRules();
+  const rulesAffectingRange = rules.filter((rule) => {
+    return rule.getRanges().some((r) => {
+      const a1 = r.getA1Notation();
+      return a1.includes(`${startRow}:`) || a1.includes(`:${endRow}`);
+    });
+  });
+
+  const drawings = sheet.getDrawings();
+  const drawingsInRange = drawings.filter((drawing) => {
+    const anchor = drawing.getContainerInfo();
+    const row = anchor.getAnchorRow() + 1;
+    return row >= startRow && row <= endRow;
+  });
+
+  for (let i = 0; i < values.length; i++) {
+    for (let j = 0; j < 6; j++) {
+      const actualRow = startRow + i;
+      const columnLetter = columnToLetter(j + 1);
+      const cellAddress = `${columnLetter}${actualRow}`;
+
+      if (values[i][j] !== "" || formulas[i][j] !== "") {
+        errors.push(`${cellAddress}: Cell contains value or formula`);
+        continue;
+      }
+
+      const textStyle = textStyles[i][j];
+      if (textStyle.isBold()) {
+        errors.push(`${cellAddress}: Cell has bold formatting`);
+      }
+      if (textStyle.isItalic()) {
+        errors.push(`${cellAddress}: Cell has italic formatting`);
+      }
+      if (textStyle.isUnderline()) {
+        errors.push(`${cellAddress}: Cell has underline formatting`);
+      }
+      if (textStyle.isStrikethrough()) {
+        errors.push(`${cellAddress}: Cell has strikethrough formatting`);
+      }
+
+      if (fontFamilies[i][j] !== "Arial") {
+        errors.push(`${cellAddress}: Wrong font family (should be Arial)`);
+      }
+      if (fontSizes[i][j] !== 10) {
+        errors.push(`${cellAddress}: Wrong font size (should be 10)`);
+      }
+      if (fontColors[i][j] !== "#000000") {
+        errors.push(`${cellAddress}: Wrong font color (should be #000000)`);
+      }
+
+      if (horizontalAlignments[i][j] !== "center") {
+        errors.push(`${cellAddress}: Cell is not center-aligned horizontally`);
+      }
+      if (verticalAlignments[i][j] !== "middle") {
+        errors.push(`${cellAddress}: Cell is not center-aligned vertically`);
+      }
+
+      if (backgrounds[i][j] !== "#ffffff") {
+        errors.push(`${cellAddress}: Wrong background color (should be #ffffff)`);
+      }
+
+      if (notes[i][j] !== "") {
+        errors.push(`${cellAddress}: Cell contains note`);
+      }
+
+      if (dataValidations[i][j] !== null) {
+        errors.push(`${cellAddress}: Cell contains data validation`);
+      }
+
+      if (rulesAffectingRange.length > 0) {
+        errors.push(`${cellAddress}: Cell has conditional formatting`);
+      }
+
+      if (
+        drawingsInRange.some((drawing) => {
+          const anchor = drawing.getContainerInfo();
+          return anchor.getAnchorRow() + 1 === actualRow && anchor.getAnchorColumn() + 1 === j + 1;
+        })
+      ) {
+        errors.push(`${cellAddress}: Cell contains drawing or image`);
+      }
+    }
+  }
+}
+
+function validateStructure(structure, errors) {
+  validateRow(structure.totalRow, ROW_TYPES.TOTAL, errors);
+
+  structure.groups.forEach((group, index) => {
+    validateGroup(group, index === 0, errors);
+  });
+
+  validateEmptyRowsAfterTotal(structure, errors);
+
+  validateTextFormatting(structure, errors);
+}
+
+function validateGroup(group, isFirst, errors) {
+  validateRow(group.startRow, ROW_TYPES.MAIN_GROUP, errors);
+
+  let lastSubgroupRow = group.startRow;
+  group.subgroups.forEach((subgroup) => {
+    if (subgroup.row !== lastSubgroupRow + 1) {
+      errors.push(`Empty line detected between subgroups at row ${lastSubgroupRow + 1}`);
+    }
+    validateRow(subgroup.row, ROW_TYPES.SUB_GROUP, errors);
+    lastSubgroupRow = subgroup.row;
+  });
+
+  if (group.endRow) {
+    validateRow(group.endRow, ROW_TYPES.SUBTOTAL, errors);
+  } else {
+    errors.push(`Missing Subtotal for group "${group.name}"`);
+  }
+}
+
+function validateRow(row, rowType, errors) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Financial Summary");
+  const range = sheet.getRange(row, 1, 1, 6);
+  const values = range.getValues()[0];
+  const numberFormats = range.getNumberFormats()[0];
+
+  const rules = rowType.requirements;
+
+  if (rules.exactMatch && values[0] !== rules.exactMatch) {
+    errors.push(`Row ${row}: Expected "${rules.exactMatch}", got "${values[0]}"`);
     return;
   }
 
-  let issues = [];
-
-  function checkCellFormat(rowIndex, col, expected) {
-    const cell = data[rowIndex][col];
-    const format = formats[rowIndex][col];
-    const alignment = alignments[rowIndex][col];
-
-    if (!cell) return;
-
-    let text = cell.toString().trim();
-
-    if (expected.isSubItem) {
-      if (!text.startsWith("- ")) {
-        if (text.startsWith("-")) {
-          issues.push(`❌ ${String.fromCharCode(65 + col)}${rowIndex + 1}: Must have a space after dash "- "`);
-        } else {
-          issues.push(`❌ ${String.fromCharCode(65 + col)}${rowIndex + 1}: Sub-items must start with "- "`);
-        }
-        return;
-      }
-    }
-
-    if (format.getFontSize() !== expected.fontSize) {
-      issues.push(
-        `❌ ${String.fromCharCode(65 + col)}${rowIndex + 1}: Font size must be ${expected.fontSize} (found ${format.getFontSize()})`
-      );
-    }
-
-    if (expected.isBold && !format.isBold()) {
-      issues.push(`❌ ${String.fromCharCode(65 + col)}${rowIndex + 1}: Text must be bold`);
-    }
-
-    if (expected.isItalic && !format.isItalic()) {
-      issues.push(`❌ ${String.fromCharCode(65 + col)}${rowIndex + 1}: Text must be italic`);
-    }
-
-    if (alignment !== expected.alignment) {
-      issues.push(`❌ ${String.fromCharCode(65 + col)}${rowIndex + 1}: Must be ${expected.alignment}-aligned`);
-    }
-
-    if (text.includes("  ")) {
-      issues.push(`❌ ${String.fromCharCode(65 + col)}${rowIndex + 1}: Contains multiple spaces`);
-    }
-
-    if (text !== text.trim()) {
-      issues.push(`❌ ${String.fromCharCode(65 + col)}${rowIndex + 1}: Has leading/trailing spaces`);
-    }
-
-    if ((expected.isGroupHeader || expected.isSubItem) && !text.includes("  ")) {
-      const textToCheck = expected.isSubItem ? text.substring(2) : text;
-
-      const words = textToCheck.split(/\s+|(?=[()])|(?<=\()/);
-
-      words.forEach((word) => {
-        if (word && word !== "(" && word !== ")") {
-          if (word[0] !== word[0].toUpperCase()) {
-            issues.push(
-              `❌ ${String.fromCharCode(65 + col)}${rowIndex + 1}: Each word must start with capital letter (including "${word}")`
-            );
-          }
-        }
-      });
-    }
-
-    if (expected.isSubItem && !text.startsWith("- ")) {
-      issues.push(`❌ ${String.fromCharCode(65 + col)}${rowIndex + 1}: Sub-items must start with "- "`);
-    }
-
-    if (expected.numberFormat) {
-      const numberFormat = sheet.getRange(rowIndex + 1, col + 1).getNumberFormat();
-
-      const allowedFormats = expected.numberFormat === 2 ? ["#,##0.00", "0.00"] : ["#,##0.0000", "0.0000"];
-
-      if (!allowedFormats.includes(numberFormat)) {
-        issues.push(
-          `❌ ${String.fromCharCode(65 + col)}${rowIndex + 1}: Cell format must be one of: ${allowedFormats.join(" or ")} (found "${
-            numberFormat || "none"
-          }")`
-        );
-      }
-
-      const value = data[rowIndex][col];
-      if (value !== "" && value !== null) {
-        const numValue = typeof value === "string" ? parseFloat(value.replace(",", ".")) : value;
-
-        if (isNaN(numValue) || typeof numValue !== "number") {
-          issues.push(`❌ ${String.fromCharCode(65 + col)}${rowIndex + 1}: Must be a valid number (found "${value}")`);
-        } else {
-          const valueString = numValue.toFixed(expected.numberFormat);
-          const decimals = valueString.split(".")[1]?.length || 0;
-          if (decimals !== expected.numberFormat) {
-            sheet.getRange(rowIndex + 1, col + 1).setNumberFormat(allowedFormats[0]);
-          }
-        }
-      }
-    }
-
-    if (expected.isCurrency && !/^[A-Z]+$/.test(text)) {
-      issues.push(`❌ ${String.fromCharCode(65 + col)}${rowIndex + 1}: Currency must be in uppercase letters only`);
-    }
-
-    if (expected.isNotes) {
-      const words = text.split(" ");
-      if (words[0][0] !== words[0][0].toUpperCase()) {
-        issues.push(`❌ ${String.fromCharCode(65 + col)}${rowIndex + 1}: First word must be capitalized`);
-      }
-    }
+  if (rules.prefix && !values[0].startsWith(rules.prefix)) {
+    errors.push(`Row ${row}: Should start with "${rules.prefix}"`);
+    return;
   }
 
-  const mainHeaders = ["Category", "Amount", "Currency", "Exchange Rate", "To Main Currency", "Notes"];
-  const headerRange = sheet.getRange("A1:F1");
-  const headerValues = headerRange.getValues()[0];
-  const headerFormats = headerRange.getTextStyles();
-  const headerAlignments = headerRange.getHorizontalAlignments()[0];
+  Object.entries(rules.columnRules).forEach(([col, rule]) => {
+    const colIndex = col.charCodeAt(0) - 65;
+    const cell = range.getCell(1, colIndex + 1);
+    const format = numberFormats[colIndex];
 
-  headerValues.forEach((value, index) => {
-    if (value !== mainHeaders[index]) {
-      issues.push(`❌ Column ${String.fromCharCode(65 + index)}1: Header mismatch - expected "${mainHeaders[index]}", found "${value}"`);
+    if (rule.type === "empty") {
+      const emptinessCheck = isCellEmpty(cell);
+      if (emptinessCheck !== true) {
+        errors.push(`${col}${row}: ${emptinessCheck}`);
+      }
+      return;
+    }
+
+    const value = values[colIndex];
+
+    if (rule.empty && value !== "") {
+      errors.push(`${col}${row}: Should be empty`);
+      return;
+    }
+
+    if (rule.required && !value) {
+      errors.push(`${col}${row}: Required value missing`);
+      return;
+    }
+
+    if (value && rule.type) {
+      if (rule.type === "number") {
+        if (typeof value !== "number") {
+          errors.push(`${col}${row}: Should be a number`);
+        }
+        const validFormats = ["0.0000", "0,0000", "#,####", "#.####"];
+        if (!validFormats.includes(format)) {
+          errors.push(`${col}${row}: Wrong number format (should be one of: ${validFormats.join(", ")})`);
+        }
+      } else if (rule.type === "string" && typeof value !== "string") {
+        errors.push(`${col}${row}: Should be text`);
+      }
+    }
+  });
+}
+
+function checkSheetStructure() {
+  const errors = [];
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  const [initialOk, initialErrors] = checkInitialStructure(ss);
+  if (!initialOk) errors.push(...initialErrors);
+
+  const financialSummary = ss.getSheetByName("Financial Summary");
+  if (financialSummary) {
+    const [externalOk, externalErrors] = checkExternalStructure(financialSummary);
+    if (!externalOk) errors.push(...externalErrors);
+
+    const [internalOk, internalErrors] = checkInternalStructure(financialSummary);
+    if (!internalOk) errors.push(...internalErrors);
+  }
+
+  if (errors.length === 0) {
+    Browser.msgBox("✅ Structure Check", "All structure requirements are met!", Browser.Buttons.OK);
+  } else {
+    Browser.msgBox("❌ Structure Check Failed", errors.join("\n"), Browser.Buttons.OK);
+  }
+
+  return {
+    ok: errors.length === 0,
+    errors: errors.length > 0 ? errors : null,
+  };
+}
+
+function restoreInternalStructure(sheet) {
+  const totalRow = findTotalRow(sheet);
+  if (!totalRow) return;
+
+  const structure = parseSheetStructure(sheet, 2, totalRow);
+
+  const dataRange = sheet.getRange(2, 1, totalRow - 1, 6);
+  dataRange
+    .setFontFamily("Arial")
+    .setFontSize(10)
+    .setFontColor("#000000")
+    .setBackground("#ffffff")
+    .setBorder(true, true, true, true, true, true, "black", SpreadsheetApp.BorderStyle.SOLID);
+
+  const totalRowRange = sheet.getRange(totalRow, 1, 1, 3);
+  totalRowRange.setFontWeight("bold");
+  sheet.getRange(totalRow, 1).setHorizontalAlignment("left");
+  sheet.getRange(totalRow, 2).setHorizontalAlignment("right");
+  sheet.getRange(totalRow, 3).setHorizontalAlignment("center");
+
+  sheet.getRange(totalRow, 2).setNumberFormat("0.0000");
+
+  structure.groups.forEach((group) => {
+    const mainGroupRange = sheet.getRange(group.startRow, 1);
+    mainGroupRange.setFontWeight("bold").setHorizontalAlignment("left").setVerticalAlignment("middle");
+
+    group.subgroups.forEach((subgroup) => {
+      const subgroupRow = sheet.getRange(subgroup.row, 1, 1, 6);
+
+      subgroupRow.getCell(1, 1).setFontWeight("normal").setHorizontalAlignment("left").setVerticalAlignment("middle");
+
+      subgroupRow
+        .getCell(1, 2)
+        .setFontWeight("normal")
+        .setHorizontalAlignment("right")
+        .setVerticalAlignment("middle")
+        .setNumberFormat("0.0000");
+
+      subgroupRow.getCell(1, 4).setNumberFormat("0.0000");
+
+      subgroupRow.getCell(1, 5).setNumberFormat("0.0000");
+
+      subgroupRow.getCell(1, 3).setFontWeight("normal").setHorizontalAlignment("center").setVerticalAlignment("middle");
+
+      subgroupRow.getCell(1, 4).setHorizontalAlignment("left").setVerticalAlignment("middle");
+
+      subgroupRow.getCell(1, 5).setHorizontalAlignment("left").setVerticalAlignment("middle");
+
+      const notesCell = subgroupRow.getCell(1, 6);
+      if (notesCell.getValue()) {
+        notesCell.setFontStyle("italic").setHorizontalAlignment("left").setVerticalAlignment("middle");
+      }
+    });
+
+    if (group.endRow) {
+      const subtotalRange = sheet.getRange(group.endRow, 1, 1, 3);
+      subtotalRange.setFontStyle("italic").setVerticalAlignment("middle");
+
+      sheet.getRange(group.endRow, 1).setHorizontalAlignment("left");
+
+      sheet.getRange(group.endRow, 2).setHorizontalAlignment("right").setNumberFormat("0.0000");
+
+      sheet.getRange(group.endRow, 3).setHorizontalAlignment("center");
     }
   });
 
-  headerFormats[0].forEach((format, index) => {
-    const col = String.fromCharCode(65 + index);
-    if (format.getFontSize() !== 12) {
-      issues.push(`❌ Column ${col}1: Font size must be 12 (currently ${format.getFontSize()})`);
-    }
-    if (!format.isBold()) {
-      issues.push(`❌ Column ${col}1: Text must be bold`);
-    }
-    if (headerAlignments[index] !== "center") {
-      issues.push(`❌ Column ${col}1: Must be center-aligned`);
+  const lastRow = sheet.getLastRow();
+  if (lastRow > totalRow) {
+    const clearRange = sheet.getRange(totalRow + 1, 1, lastRow - totalRow, 6);
+    clearRange
+      .clear()
+      .setFontFamily("Arial")
+      .setFontSize(10)
+      .setFontWeight("normal")
+      .setFontStyle("normal")
+      .setFontColor("#000000")
+      .setBackground("#ffffff")
+      .setHorizontalAlignment("center")
+      .setVerticalAlignment("middle")
+      .setBorder(true, true, true, true, true, true, "black", SpreadsheetApp.BorderStyle.SOLID);
+  }
+}
+
+function checkInitialStructure(spreadsheet) {
+  const errors = [];
+  const sheets = spreadsheet.getSheets();
+  const sheetNames = sheets.map((sheet) => sheet.getName());
+
+  const hasFinancialSummary = sheetNames.includes("Financial Summary");
+  const snapshotSheets = sheetNames.filter((name) => name.startsWith("Snapshot_") && name !== "Financial Summary");
+  const hasDebugLogs = sheetNames.includes("Debug Logs");
+
+  if (!hasFinancialSummary) {
+    errors.push('Missing required sheet: "Financial Summary"');
+  }
+
+  const allowedSheetsCount = (hasFinancialSummary ? 1 : 0) + snapshotSheets.length + (hasDebugLogs ? 1 : 0);
+
+  if (sheetNames.length !== allowedSheetsCount) {
+    errors.push('Invalid sheets detected. Only "Financial Summary", "Debug Logs" and Snapshot_ sheets allowed');
+  }
+
+  return [errors.length === 0, errors];
+}
+
+function restoreInitialStructure() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheets = ss.getSheets();
+  const messages = [];
+
+  const financialSummary = ss.getSheetByName("Financial Summary");
+  if (!financialSummary) {
+    ss.insertSheet("Financial Summary");
+    messages.push('Created "Financial Summary" sheet');
+  }
+
+  sheets.forEach((sheet) => {
+    const name = sheet.getName();
+    if (name !== "Financial Summary" && name !== "Debug Logs" && !name.startsWith("Snapshot_")) {
+      ss.deleteSheet(sheet);
+      messages.push(`Removed invalid sheet: "${name}"`);
     }
   });
 
+  if (messages.length === 0) {
+    Browser.msgBox("✅ Structure Check", "Financial Summary sheet is already in place!", Browser.Buttons.OK);
+  } else {
+    Browser.msgBox("✅ Structure Restored", messages.join("\n"), Browser.Buttons.OK);
+  }
+}
+
+function restoreExternalStructure(sheet) {
+  const mainHeaders = [
+    ["Category", "Amount", "Currency", "Exchange Rate", "To Main Currency", "Notes", "", "Action", "Description", "Button"],
+  ];
+  const headerRange = sheet.getRange(1, 1, 1, 10);
+  headerRange.setValues(mainHeaders);
+
+  const rangeA1F1000 = sheet.getRange("A1:F1000");
+  const rangeH1J6 = sheet.getRange("H1:J6");
+  const rangeG1G1000 = sheet.getRange("G1:G1000");
+  const rangeF1F1000 = sheet.getRange("F1:F1000");
+  const rangeH1H6 = sheet.getRange("H1:H6");
+
+  rangeA1F1000
+    .setFontFamily("Arial")
+    .setFontColor("#000000")
+    .setBorder(true, true, true, true, true, true, "black", SpreadsheetApp.BorderStyle.SOLID)
+    .setBackground(null);
+
+  rangeH1J6
+    .setFontFamily("Arial")
+    .setFontColor("#000000")
+    .setBorder(true, true, true, true, true, true, "black", SpreadsheetApp.BorderStyle.SOLID)
+    .setBackground(null);
+
+  rangeG1G1000.setBorder(false, false, false, false, false, false).setBackground(null).setFontFamily("Arial");
+
+  rangeF1F1000.setBorder(null, null, null, true, null, null, "black", SpreadsheetApp.BorderStyle.SOLID);
+
+  rangeH1H6.setBorder(null, true, null, null, null, null, "black", SpreadsheetApp.BorderStyle.SOLID);
+
+  sheet
+    .getRange("A1:F1")
+    .setFontFamily("Arial")
+    .setFontSize(12)
+    .setFontWeight("bold")
+    .setHorizontalAlignment("center")
+    .setVerticalAlignment("middle");
+
+  sheet
+    .getRange("H1:J1")
+    .setFontFamily("Arial")
+    .setFontSize(12)
+    .setFontWeight("bold")
+    .setHorizontalAlignment("center")
+    .setVerticalAlignment("middle");
+
+  const actionData = [
+    ["Clear Data", "Remove all data but keep headers", ""],
+    ["Fill Example Data", "Insert sample financial data", ""],
+    ["Save Snapshot", "Save a copy with UTC timestamp", ""],
+    ["Load Last Snapshot", "Restore the last saved snapshot", ""],
+    ["Convert to Main Currency", "Fetch exchange rates and recalculate", ""],
+  ];
+
+  const actionRange = sheet.getRange(2, 8, 5, 3);
+  actionRange.setValues(actionData);
+
+  const actionLabels = sheet.getRange(2, 8, 5, 1);
+  actionLabels
+    .setFontFamily("Arial")
+    .setFontSize(10)
+    .setFontWeight("normal")
+    .setFontStyle("normal")
+    .setHorizontalAlignment("left")
+    .setVerticalAlignment("middle");
+
+  const actionDescriptions = sheet.getRange(2, 9, 5, 1);
+  actionDescriptions
+    .setFontFamily("Arial")
+    .setFontSize(10)
+    .setFontWeight("normal")
+    .setFontStyle("italic")
+    .setHorizontalAlignment("left")
+    .setVerticalAlignment("middle");
+
+  const checkboxRange = sheet.getRange(2, 10, 5, 1);
+  const rule = SpreadsheetApp.newDataValidation().requireCheckbox().build();
+  checkboxRange
+    .setDataValidation(rule)
+    .setHorizontalAlignment("center")
+    .setVerticalAlignment("middle")
+    .setFontSize(10)
+    .setFontWeight("normal")
+    .setFontStyle("normal");
+
+  Object.entries(COLUMN_WIDTHS).forEach(([col, width]) => {
+    sheet.setColumnWidth(parseInt(col), width);
+  });
+}
+
+function checkExternalStructure(sheet) {
+  const errors = [];
   const dataRange = sheet.getDataRange();
-  const data = dataRange.getValues();
-  const formats = dataRange.getTextStyles();
-  const alignments = dataRange.getHorizontalAlignments();
+  const values = dataRange.getValues();
 
-  const columnRules = {
-    0: {
-      groupHeader: { fontSize: 10, isBold: true, alignment: "left", isGroupHeader: true },
-      subItem: { fontSize: 10, isBold: false, alignment: "left", isSubItem: true },
-      subtotal: { fontSize: 10, isItalic: true, alignment: "left" },
-      total: { fontSize: 10, isBold: true, alignment: "left" },
+  const expectedHeaders = [
+    "Category",
+    "Amount",
+    "Currency",
+    "Exchange Rate",
+    "To Main Currency",
+    "Notes",
+    "",
+    "Action",
+    "Description",
+    "Button",
+  ];
+
+  expectedHeaders.forEach((expected, col) => {
+    if (expected && values[0][col] !== expected) {
+      errors.push(`${getCellAddress(1, col + 1)}: Should contain "${expected}"`);
+    }
+  });
+
+  const mainHeaders = sheet.getRange("A1:F1");
+  const actionHeaders = sheet.getRange("H1:J1");
+
+  checkFormatting(sheet, errors);
+
+  checkHeaderFormatting(mainHeaders, errors);
+  checkHeaderFormatting(actionHeaders, errors);
+
+  checkButtons(sheet, errors);
+
+  return [errors.length === 0, errors];
+}
+
+function checkHeaderFormatting(range, errors) {
+  const startRow = range.getRow();
+  const startCol = range.getColumn();
+  const numCols = range.getNumColumns();
+
+  for (let col = 0; col < numCols; col++) {
+    const cell = range.getCell(1, col + 1);
+    const address = getCellAddress(startRow, startCol + col);
+    const size = cell.getFontSize();
+    if (size !== 12) {
+      errors.push(`${address}: Wrong font size (should be 12)`);
+    }
+
+    const isBold = cell.getFontWeight() === "bold";
+    if (!isBold) {
+      errors.push(`${address}: Should be bold`);
+    }
+
+    const unwantedStyles = [];
+
+    if (cell.getFontStyle() !== "normal") {
+      unwantedStyles.push("italic");
+    }
+
+    if (cell.getFontLine() === "line-through") {
+      unwantedStyles.push("strikethrough");
+    }
+
+    if (cell.getFontLine() === "underline") {
+      unwantedStyles.push("underline");
+    }
+
+    if (unwantedStyles.length > 0) {
+      errors.push(`${address}: Found unwanted styles (${unwantedStyles.join(", ")})`);
+    }
+
+    const hAlign = cell.getHorizontalAlignment().toLowerCase();
+    const vAlign = cell.getVerticalAlignment().toLowerCase();
+
+    if (hAlign !== "center") {
+      errors.push(`${address}: Should be center-aligned horizontally`);
+    }
+
+    if (vAlign !== "middle") {
+      errors.push(`${address}: Should be center-aligned vertically`);
+    }
+  }
+}
+
+function checkFormatting(sheet, errors) {
+  const rangeA1F1000 = sheet.getRange("A1:F1000");
+  const rangeH1J6 = sheet.getRange("H1:J6");
+  const rangeG1G1000 = sheet.getRange("G1:G1000");
+
+  checkNoBackground(rangeA1F1000, errors);
+  checkNoBackground(rangeH1J6, errors);
+
+  checkFontAndColor(rangeA1F1000, errors);
+  checkFontAndColor(rangeH1J6, errors);
+
+  checkBorders(rangeA1F1000, errors);
+  checkBorders(rangeH1J6, errors);
+  checkGColumnContent(rangeG1G1000, errors);
+  checkColumnWidths(sheet, errors);
+}
+
+function checkColumnWidths(sheet, errors) {
+  Object.entries(COLUMN_WIDTHS).forEach(([col, expectedWidth]) => {
+    const columnLetter = columnToLetter(parseInt(col));
+    const actualWidth = sheet.getColumnWidth(parseInt(col));
+
+    const minWidth = expectedWidth - 5;
+    const maxWidth = expectedWidth + 5;
+
+    if (actualWidth < minWidth || actualWidth > maxWidth) {
+      errors.push(`Column ${columnLetter}: Wrong width (current: ${actualWidth}px, expected: ${expectedWidth}px)`);
+    }
+  });
+}
+
+function checkGColumnContent(range, errors) {
+  const values = range.getValues();
+  const validations = range.getDataValidations();
+  const notes = range.getNotes();
+  const fontFamilies = range.getFontFamilies();
+  const fontColors = range.getFontColors();
+  const backgrounds = range.getBackgrounds();
+  const textStyles = range.getTextStyles();
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = range.getSheet();
+  const fileId = ss.getId();
+  const sheetName = sheet.getName();
+  const token = ScriptApp.getOAuthToken();
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${fileId}?ranges=${encodeURIComponent(
+    sheetName + "!G1:G1000"
+  )}&fields=sheets/data/rowData/values/userEnteredFormat/borders`;
+
+  try {
+    const response = UrlFetchApp.fetch(url, {
+      method: "get",
+      headers: { Authorization: "Bearer " + token },
+      muteHttpExceptions: true,
+    });
+    const result = JSON.parse(response.getContentText());
+    const rowData = result.sheets?.[0]?.data?.[0]?.rowData || [];
+
+    values.forEach((row, rowIndex) => {
+      const actualRow = rowIndex + 1;
+      const cellAddress = `G${actualRow}`;
+
+      if (row[0] !== "") {
+        errors.push(`${cellAddress}: Should be empty`);
+      }
+
+      if (validations[rowIndex][0] !== null) {
+        errors.push(`${cellAddress}: Should not have data validation`);
+      }
+
+      if (notes[rowIndex][0] !== "") {
+        errors.push(`${cellAddress}: Should not have notes`);
+      }
+
+      if (fontFamilies[rowIndex][0] !== "Arial") {
+        errors.push(`${cellAddress}: Should have default font (Arial)`);
+      }
+      if (fontColors[rowIndex][0] !== "#000000") {
+        errors.push(`${cellAddress}: Should have default text color (black)`);
+      }
+      if (backgrounds[rowIndex][0] !== "#ffffff") {
+        errors.push(`${cellAddress}: Should have no background color`);
+      }
+
+      const textStyle = textStyles[rowIndex][0];
+      if (textStyle.isBold() || textStyle.isItalic() || textStyle.isUnderline() || textStyle.isStrikethrough()) {
+        errors.push(`${cellAddress}: Should not have any text styling`);
+      }
+
+      const cellBorders = rowData[rowIndex]?.values?.[0]?.userEnteredFormat?.borders;
+      if (cellBorders) {
+        if (cellBorders.top?.style !== "NONE") {
+          errors.push(`${cellAddress}: Should not have top border`);
+        }
+        if (cellBorders.bottom?.style !== "NONE") {
+          errors.push(`${cellAddress}: Should not have bottom border`);
+        }
+      }
+    });
+
+    const drawings = sheet.getDrawings();
+    drawings.forEach((drawing) => {
+      const anchorCol = drawing.getContainerInfo().getAnchorColumn();
+      if (anchorCol === 6) {
+        errors.push(`Column G: Should not contain any drawings or objects`);
+      }
+    });
+  } catch (error) {
+    errors.push(`Column G: Critical error checking format - ${error.message}`);
+  }
+}
+
+function checkNoBackground(range, errors) {
+  const backgrounds = range.getBackgrounds();
+  backgrounds.forEach((row, rIndex) => {
+    row.forEach((bg, cIndex) => {
+      if (bg !== "#ffffff") {
+        const cellAddress = getCellAddress(rIndex + range.getRow(), cIndex + range.getColumn());
+        errors.push(`${cellAddress}: Should have no background color`);
+      }
+    });
+  });
+}
+
+function checkFontAndColor(range, errors) {
+  const fonts = range.getFontFamilies();
+  const colors = range.getFontColors();
+
+  fonts.forEach((row, rIndex) => {
+    row.forEach((font, cIndex) => {
+      const cellAddress = getCellAddress(rIndex + range.getRow(), cIndex + range.getColumn());
+
+      if (font !== "Arial") {
+        errors.push(`${cellAddress}: Wrong font family (should be Arial)`);
+      }
+
+      const color = colors[rIndex][cIndex];
+      if (color !== "#000000") {
+        errors.push(`${cellAddress}: Wrong text color (should be black)`);
+      }
+    });
+  });
+}
+
+function checkButtons(sheet, errors) {
+  const buttonStructure = {
+    H: {
+      content: ["Clear Data", "Fill Example Data", "Save Snapshot", "Load Last Snapshot", "Convert to Main Currency"],
+      format: {
+        hAlign: "left",
+        vAlign: "middle",
+        fontSize: 10,
+        style: "normal",
+        startRow: 2,
+        endRow: 6,
+      },
     },
-    1: {
-      groupHeader: { fontSize: 10, isBold: true, alignment: "right" },
-      subItem: { fontSize: 10, alignment: "right", numberFormat: 2 },
-      subtotal: { fontSize: 10, isItalic: true, alignment: "right", numberFormat: 2 },
-      total: { fontSize: 10, isBold: true, alignment: "right", numberFormat: 2 },
+    I: {
+      content: [
+        "Remove all data but keep headers",
+        "Insert sample financial data",
+        "Save a copy with UTC timestamp",
+        "Restore the last saved snapshot",
+        "Fetch exchange rates and recalculate",
+      ],
+      format: {
+        hAlign: "left",
+        vAlign: "middle",
+        fontSize: 10,
+        style: "italic",
+        startRow: 2,
+        endRow: 6,
+      },
     },
-    2: {
-      subItem: { fontSize: 10, alignment: "center", isCurrency: true },
-      subtotal: { fontSize: 10, isItalic: true, alignment: "center", isCurrency: true },
-      total: { fontSize: 10, isBold: true, alignment: "center", isCurrency: true },
-    },
-    3: {
-      subItem: { fontSize: 10, alignment: "center", numberFormat: 4 },
-    },
-    4: {
-      subItem: { fontSize: 10, alignment: "center", numberFormat: 4 },
-    },
-    5: {
-      subItem: { fontSize: 10, isItalic: true, alignment: "left", isNotes: true },
+    J: {
+      content: Array(5).fill(""),
+      format: {
+        hAlign: "center",
+        vAlign: "middle",
+        fontSize: 10,
+        style: "normal",
+        startRow: 2,
+        endRow: 6,
+        isCheckbox: true,
+      },
     },
   };
 
-  for (let rowIndex = 1; rowIndex < data.length; rowIndex++) {
-    const cellA = data[rowIndex][0]?.toString().trim() || "";
-    const cellAUpper = cellA.toUpperCase();
+  Object.entries(buttonStructure).forEach(([col, config]) => {
+    const { content, format } = config;
 
-    const nextRowCellA = data[rowIndex + 1]?.[0]?.toString().trim() || "";
-    const isGroupHeader = !cellA.startsWith("- ") && nextRowCellA.startsWith("- ");
+    for (let rowIndex = 0; rowIndex < content.length; rowIndex++) {
+      const row = format.startRow + rowIndex;
+      const cell = sheet.getRange(`${col}${row}`);
+      const expected = content[rowIndex];
 
-    if (cellA === "Subtotal:") {
-      for (let col = 0; col < 6; col++) {
-        if (columnRules[col]?.subtotal) {
-          checkCellFormat(rowIndex, col, columnRules[col].subtotal);
-        }
+      if (expected && cell.getValue() !== expected) {
+        errors.push(`${col}${row}: Should contain "${expected}"`);
       }
-    } else if (cellAUpper === "TOTAL:") {
-      for (let col = 0; col < 6; col++) {
-        if (columnRules[col]?.total) {
-          checkCellFormat(rowIndex, col, columnRules[col].total);
-        }
-      }
-    } else if (cellA.toLowerCase().includes("subtotal") && cellA !== "Subtotal:") {
-      issues.push(`❌ ${String.fromCharCode(65)}${rowIndex + 1}: Must be exactly "Subtotal:"`);
-    } else if (cellAUpper.includes("TOTAL") && cellAUpper !== "TOTAL:") {
-      issues.push(`❌ ${String.fromCharCode(65)}${rowIndex + 1}: Must be exactly "TOTAL:"`);
-    } else if (isGroupHeader) {
-      for (let col = 0; col < 6; col++) {
-        if (columnRules[col]?.groupHeader) {
-          checkCellFormat(rowIndex, col, columnRules[col].groupHeader);
-        }
-      }
-    } else {
-      const shouldBeSubItem =
-        !isGroupHeader && (data[rowIndex - 1]?.[0]?.toString().trim().startsWith("- ") || nextRowCellA.startsWith("- "));
 
-      if (shouldBeSubItem && !cellA.startsWith("- ")) {
-        issues.push(`❌ ${String.fromCharCode(65)}${rowIndex + 1}: Sub-items must start with "- "`);
-      } else if (cellA.startsWith("- ")) {
-        for (let col = 0; col < 6; col++) {
-          if (columnRules[col]?.subItem) {
-            checkCellFormat(rowIndex, col, columnRules[col].subItem);
-          }
+      if (format.isCheckbox) {
+        const validation = cell.getDataValidation();
+        if (!validation || validation.getCriteriaType() !== SpreadsheetApp.DataValidationCriteria.CHECKBOX) {
+          errors.push(`${col}${row}: Should be a checkbox`);
         }
-      } else if (cellA) {
       }
+
+      checkButtonFormatting(cell, format, errors);
     }
+  });
+}
+
+function checkButtonFormatting(cell, format, errors) {
+  const address = cell.getA1Notation();
+
+  const textStyle = cell.getTextStyle();
+  const fontSize = cell.getFontSize();
+  const hAlign = cell.getHorizontalAlignment().toLowerCase();
+  const vAlign = cell.getVerticalAlignment().toLowerCase();
+  if (hAlign !== format.hAlign) {
+    errors.push(`${address}: Wrong horizontal alignment (should be ${format.hAlign})`);
+  }
+  if (vAlign !== format.vAlign) {
+    errors.push(`${address}: Wrong vertical alignment (should be ${format.vAlign})`);
   }
 
-  const actionHeaders = ["Action", "Description", "Button"];
-  const actionHeaderRange = sheet.getRange("H1:J1");
-  const actionHeaderValues = actionHeaderRange.getValues()[0];
-  const actionHeaderFormats = actionHeaderRange.getTextStyles()[0];
-  const actionHeaderAlignments = actionHeaderRange.getHorizontalAlignments()[0];
+  if (fontSize !== format.fontSize) {
+    errors.push(`${address}: Wrong font size (should be ${format.fontSize})`);
+  }
 
-  actionHeaderValues.forEach((value, index) => {
-    const col = String.fromCharCode(72 + index);
-    if (value !== actionHeaders[index]) {
-      issues.push(`❌ Column ${col}1: Header mismatch - expected "${actionHeaders[index]}", found "${value}"`);
-    }
-    if (actionHeaderFormats[index].getFontSize() !== 12) {
-      issues.push(`❌ Column ${col}1: Font size must be 12`);
-    }
-    if (!actionHeaderFormats[index].isBold()) {
-      issues.push(`❌ Column ${col}1: Text must be bold`);
-    }
-    if (actionHeaderAlignments[index] !== "center") {
-      issues.push(`❌ Column ${col}1: Must be center-aligned`);
-    }
-  });
+  const unwantedStyles = [];
 
-  const expectedActions = [
-    ["Clear Data", "Remove all data but keep headers", "FALSE"],
-    ["Fill Example Data", "Insert sample financial data", "FALSE"],
-    ["Save Snapshot", "Save a copy with UTC timestamp", "FALSE"],
-    ["Load Last Snapshot", "Restore the last saved snapshot", "FALSE"],
-    ["Convert to Main Currency", "Fetch exchange rates and recalculate", "FALSE"],
-  ];
+  const hasItalic = textStyle.isItalic();
+  if (format.style === "italic" && !hasItalic) {
+    errors.push(`${address}: Missing italic style`);
+  } else if (format.style === "normal" && hasItalic) {
+    unwantedStyles.push("italic");
+  }
 
-  const actionRange = sheet.getRange("H2:J6");
-  const actionValues = actionRange.getValues();
-  const actionFormats = actionRange.getTextStyles();
-  const actionAlignments = actionRange.getHorizontalAlignments();
+  if (textStyle.isBold()) {
+    unwantedStyles.push("bold");
+  }
 
-  actionValues.forEach((row, rowIndex) => {
-    const rowNum = rowIndex + 2;
+  if (cell.getFontLine() === "line-through") {
+    unwantedStyles.push("strikethrough");
+  }
 
-    if (row[0] !== expectedActions[rowIndex][0]) {
-      issues.push(`❌ H${rowNum}: Text mismatch - expected "${expectedActions[rowIndex][0]}", found "${row[0]}"`);
-    }
-    if (actionFormats[rowIndex][0].getFontSize() !== 10) {
-      issues.push(`❌ H${rowNum}: Font size must be 10`);
-    }
-    if (actionAlignments[rowIndex][0] !== "left") {
-      issues.push(`❌ H${rowNum}: Must be left-aligned`);
-    }
-    if (actionFormats[rowIndex][0].isBold() || actionFormats[rowIndex][0].isItalic()) {
-      issues.push(`❌ H${rowNum}: Must be normal text (not bold/italic)`);
+  if (cell.getFontLine() === "underline") {
+    unwantedStyles.push("underline");
+  }
+
+  if (unwantedStyles.length > 0) {
+    errors.push(`${address}: Found unwanted styles (${unwantedStyles.join(", ")})`);
+  }
+}
+
+function getCellAddress(row, col) {
+  return `${columnToLetter(col)}${row}`;
+}
+
+function columnToLetter(column) {
+  let temp,
+    letter = "";
+  while (column > 0) {
+    temp = (column - 1) % 26;
+    letter = String.fromCharCode(temp + 65) + letter;
+    column = (column - temp - 1) / 26;
+  }
+  return letter;
+}
+
+function checkBorders(range, errors) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const fileId = ss.getId();
+  const sheetName = range.getSheet().getName();
+  const token = ScriptApp.getOAuthToken();
+  const rangeA1 = range.getA1Notation();
+  const startRow = range.getRow();
+  const startCol = range.getColumn();
+  const [expectedRows, expectedCols] = [range.getNumRows(), range.getNumColumns()];
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${fileId}?ranges=${encodeURIComponent(
+    sheetName + "!" + rangeA1
+  )}&fields=sheets/data/rowData/values/userEnteredFormat/borders`;
+
+  try {
+    const params = {
+      method: "get",
+      headers: { Authorization: "Bearer " + token },
+      muteHttpExceptions: true,
+    };
+
+    const response = UrlFetchApp.fetch(url, params);
+    const content = response.getContentText();
+    const result = JSON.parse(content);
+
+    if (!result.sheets) {
+      errors.push(`${rangeA1}: No sheet data`);
+      return;
     }
 
-    if (row[1] !== expectedActions[rowIndex][1]) {
-      issues.push(`❌ I${rowNum}: Text mismatch - expected "${expectedActions[rowIndex][1]}", found "${row[1]}"`);
-    }
-    if (actionFormats[rowIndex][1].getFontSize() !== 10) {
-      issues.push(`❌ I${rowNum}: Font size must be 10`);
-    }
-    if (!actionFormats[rowIndex][1].isItalic()) {
-      issues.push(`❌ I${rowNum}: Text must be italic`);
-    }
-    if (actionAlignments[rowIndex][1] !== "left") {
-      issues.push(`❌ I${rowNum}: Must be left-aligned`);
+    const sheetData = result.sheets[0];
+    if (!sheetData?.data?.[0]?.rowData) {
+      errors.push(`${rangeA1}: No row data`);
+      return;
     }
 
-    const buttonValue = row[2].toString().toUpperCase();
-    if (buttonValue !== "FALSE") {
-      if (buttonValue === "TRUE") {
-        issues.push(`⚠️ J${rowNum}: Warning - Checkbox is checked (TRUE)`);
-      } else {
-        issues.push(`❌ J${rowNum}: Invalid value - expected "FALSE", found "${row[2]}"`);
+    const rowData = sheetData.data[0].rowData;
+
+    if (rowData.length !== expectedRows) {
+      errors.push(`${rangeA1}: Missing rows. Expected ${expectedRows} rows, got ${rowData.length}`);
+      return;
+    }
+
+    rowData.forEach((row, rowIndex) => {
+      if (!row.values || row.values.length !== expectedCols) {
+        const actualRow = startRow + rowIndex;
+        errors.push(`${rangeA1}: Row ${actualRow} has missing columns. Expected ${expectedCols} columns, got ${row.values?.length || 0}`);
+        return;
       }
-    }
-    if (actionFormats[rowIndex][2].getFontSize() !== 10) {
-      issues.push(`❌ J${rowNum}: Font size must be 10`);
-    }
-    if (actionAlignments[rowIndex][2] !== "center") {
-      issues.push(`❌ J${rowNum}: Must be center-aligned`);
-    }
-  });
 
-  if (issues.length === 0) {
-    Browser.msgBox("✅ Structure Check Passed", "All formatting and structure requirements are met!", Browser.Buttons.OK);
-  } else {
-    const formattedIssues = issues
-      .sort((a, b) => {
-        const aCell = a.match(/[A-Z]\d+/)[0];
-        const bCell = b.match(/[A-Z]\d+/)[0];
-        return aCell.localeCompare(bCell);
-      })
-      .join("\n");
+      row.values.forEach((cell, colIndex) => {
+        const borders = cell?.userEnteredFormat?.borders;
+        const actualRow = startRow + rowIndex;
+        const actualCol = startCol + colIndex;
+        const cellAddress = `${columnToLetter(actualCol)}${actualRow}`;
 
-    Browser.msgBox("❌ Structure Check Failed", "The following issues need to be addressed:\n\n" + formattedIssues, Browser.Buttons.OK);
+        if (!borders) {
+          errors.push(`${cellAddress}: No borders defined`);
+          return;
+        }
+
+        ["top", "bottom", "left", "right"].forEach((side) => {
+          if (!borders[side]) {
+            errors.push(`${cellAddress}: Missing ${side} border`);
+          }
+        });
+
+        ["top", "bottom", "left", "right"].forEach((side) => {
+          const border = borders[side];
+          if (border) {
+            if (border.style !== "SOLID") {
+              errors.push(`${cellAddress}: ${side} border should be solid`);
+            }
+            if (border.color && (border.color.red > 0 || border.color.green > 0 || border.color.blue > 0)) {
+              errors.push(`${cellAddress}: ${side} border should be black`);
+            }
+          }
+        });
+      });
+    });
+
+    const lastRow = startRow + expectedRows - 1;
+    const lastCol = startCol + expectedCols - 1;
+    const expectedRange = `${columnToLetter(startCol)}${startRow}:${columnToLetter(lastCol)}${lastRow}`;
+
+    if (rangeA1 !== expectedRange) {
+      errors.push(`Range mismatch: Expected ${expectedRange}, got ${rangeA1}`);
+    }
+  } catch (error) {
+    errors.push(`${rangeA1}: Critical error - ${error.message}`);
   }
 }
 
@@ -345,15 +1444,37 @@ function clearAllCache() {
     const ratesCacheKey = `exchangeRates_${mainCurrency}_${currencies.sort()}`;
     cache.remove(ratesCacheKey);
 
-    Browser.msgBox("Cache cleared successfully!");
+    Browser.msgBox("✅ Cache cleared successfully!");
   } catch (error) {
-    Browser.msgBox("Error clearing cache: " + error.message);
+    Browser.msgBox("❌ Error clearing cache: " + error.message);
   }
 }
 
 function onOpen() {
   const ui = SpreadsheetApp.getUi();
-  ui.createMenu("Financial Tools").addItem("Clear Cache", "clearAllCache").addItem("Check Structure", "checkSheetStructure").addToUi();
+  ui.createMenu("Financial Tools")
+    .addItem("Clear Cache", "clearAllCache")
+    .addItem("Check Structure", "checkSheetStructure")
+    .addItem("Restore Structure", "restoreAllStructure")
+    .addToUi();
+}
+
+function restoreAllStructure() {
+  try {
+    restoreInitialStructure();
+
+    const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Financial Summary");
+    if (!sheet) {
+      throw new Error("Financial Summary sheet not found");
+    }
+
+    restoreExternalStructure(sheet);
+    restoreInternalStructure(sheet);
+
+    Browser.msgBox("✅ All structures restored successfully!");
+  } catch (error) {
+    Browser.msgBox("❌ Error during restore: " + error.message);
+  }
 }
 
 function getStablecoinCache() {
@@ -390,7 +1511,7 @@ function onEdit(e) {
 
         action();
       } catch (error) {
-        Browser.msgBox(`Error: ${error.message}`);
+        Browser.msgBox(`❌ Error: ${error.message}`);
       }
     }
   }
@@ -414,12 +1535,46 @@ function logToSheet(message) {
 function clearSheet() {
   var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Financial Summary");
   if (!sheet) {
-    Browser.msgBox("Sheet not found!");
+    Browser.msgBox("❌ Sheet not found!");
     return;
   }
-  var range = sheet.getRange("A2:F");
-  range.clearContent();
-  Browser.msgBox("Sheet cleared, structure retained!");
+
+  var range = sheet.getRange("A2:F1000");
+
+  try {
+    range.clear();
+
+    range
+      .setFontFamily("Arial")
+      .setFontSize(10)
+      .setFontStyle("normal")
+      .setFontWeight("normal")
+      .setFontLine("none")
+      .setFontColor("#000000")
+      .setBackground(null)
+      .setHorizontalAlignment("center")
+      .setVerticalAlignment("middle")
+      .setNumberFormat("General")
+      .setShowHyperlink(false)
+      .setTextRotation(0);
+
+    range.setDataValidation(null);
+
+    range.clearNote();
+
+    var rules = sheet.getConditionalFormatRules();
+    var newRules = rules.filter((rule) => {
+      var ranges = rule.getRanges();
+      return !ranges.some((r) => r.getA1Notation().includes("A2:F1000"));
+    });
+    sheet.setConditionalFormatRules(newRules);
+
+    range.setBorder(true, true, true, true, true, true, "black", SpreadsheetApp.BorderStyle.SOLID);
+
+    Browser.msgBox("✅ Sheet cleared and reset successfully!");
+  } catch (error) {
+    Browser.msgBox("❌ Error: " + error.message);
+  }
 }
 
 function fillExampleData() {
@@ -455,17 +1610,9 @@ function fillExampleData() {
   var range = sheet.getRange(1, 1, data.length, data[0].length);
   range.setValues(data);
 
-  var boldRows = [2, 9, 16, 19, 22, 24];
-  boldRows.forEach(function (row) {
-    sheet.getRange(row, 1, 1, 6).setFontWeight("bold");
-  });
+  restoreInternalStructure(sheet);
 
-  var italicRows = [8, 15, 18, 21, 23];
-  italicRows.forEach(function (row) {
-    sheet.getRange(row, 1, 1, 6).setFontStyle("italic");
-  });
-
-  Browser.msgBox("Example data inserted!");
+  Browser.msgBox("✅ Example data inserted!");
 }
 
 function saveSnapshot() {
@@ -516,7 +1663,7 @@ function saveSnapshot() {
     newSheet.setColumnWidth(col, newSheet.getColumnWidth(col) + 10);
   }
 
-  Browser.msgBox("Snapshot saved as: " + newSheetName);
+  Browser.msgBox("✅ Snapshot saved as: " + newSheetName);
 }
 
 function loadLastSnapshot() {
@@ -527,7 +1674,7 @@ function loadLastSnapshot() {
     .filter((name) => name.startsWith("Snapshot_"));
 
   if (sheets.length === 0) {
-    Browser.msgBox("No snapshots found!");
+    Browser.msgBox("❌ No snapshots found!");
     return;
   }
 
@@ -546,11 +1693,11 @@ function loadLastSnapshot() {
 
   dataRange.copyTo(destinationRange, { contentsOnly: false });
 
-  Browser.msgBox("Restored from: " + lastSnapshotName);
+  Browser.msgBox("✅ Restored from: " + lastSnapshotName);
 }
 
 function onError(error) {
-  Browser.msgBox(`Critical error: ${error.message}`);
+  Browser.msgBox(`❌ Critical error: ${error.message}`);
 }
 
 function convertToMainCurrency() {
@@ -578,7 +1725,7 @@ function findMainCurrency(sheet) {
       return [row[2]?.toUpperCase(), i];
     }
   }
-  Browser.msgBox("TOTAL: row not found");
+  Browser.msgBox("❌ TOTAL: row not found");
   return [null, null];
 }
 
@@ -629,7 +1776,6 @@ function updateExchangeData(sheet, mainCurrency, totalRowIndex, rates) {
   const data = dataRange.getValues();
 
   let currentSection = [];
-  let lastSubtotalRow = -1;
 
   for (let i = 1; i < totalRowIndex; i++) {
     const rowLabel = data[i][0]?.toString().trim().toUpperCase() || "";
@@ -641,7 +1787,6 @@ function updateExchangeData(sheet, mainCurrency, totalRowIndex, rates) {
       if (data[i][2]?.toString().toUpperCase() !== mainCurrency) {
         data[i][2] = mainCurrency;
       }
-      lastSubtotalRow = i;
       currentSection = [];
       continue;
     } else if (rowLabel === "TOTAL:") {
@@ -663,7 +1808,7 @@ function updateExchangeData(sheet, mainCurrency, totalRowIndex, rates) {
   }
 
   dataRange.setValues(data);
-  Browser.msgBox(`Converted to ${mainCurrency}`);
+  Browser.msgBox(`✅ Converted to ${mainCurrency}`);
 }
 
 function parseRowData(row) {
@@ -707,7 +1852,7 @@ function getExchangeRates(baseCurrency, currencyList) {
     cache.put(cacheKey, JSON.stringify(rates), 3600);
     return rates;
   } catch (e) {
-    Browser.msgBox("Error: " + e.message);
+    Browser.msgBox("❌ Error: " + e.message);
     return {};
   }
 }
@@ -769,7 +1914,7 @@ function initiateConversion(e) {
       convertToMainCurrency();
       sheet.getRange(6, 11).clearContent();
     } catch (error) {
-      Browser.msgBox(`Error: ${error.message}`);
+      Browser.msgBox(`❌ Error: ${error.message}`);
     }
 
     e.range.setValue(false);
