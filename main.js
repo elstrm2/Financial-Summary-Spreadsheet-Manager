@@ -1772,17 +1772,28 @@ function collectCurrencies(sheet, totalRowIndex) {
 }
 
 function updateExchangeData(sheet, mainCurrency, totalRowIndex, rates) {
-  const dataRange = sheet.getRange(1, 1, totalRowIndex, 6);
+  const dataRange = sheet.getRange(1, 1, totalRowIndex + 1, 6);
   const data = dataRange.getValues();
+
+  if (!data || !data.length) {
+    throw new Error("No data found in range");
+  }
 
   let currentSection = [];
 
-  for (let i = 1; i < totalRowIndex; i++) {
-    const rowLabel = data[i][0]?.toString().trim().toUpperCase() || "";
+  for (let i = 1; i <= totalRowIndex && i < data.length; i++) {
+    const rowData = data[i];
+    if (!rowData) {
+      continue;
+    }
+
+    const rawLabel = rowData[0]?.toString() || "";
+    const rowLabel = rawLabel.trim().toUpperCase();
 
     if (rowLabel.startsWith("SUBTOTAL:")) {
       if (currentSection.length > 0) {
-        data[i][1] = `=SUM(E${currentSection[0]}:E${currentSection[currentSection.length - 1]})`;
+        const formula = `=SUM(E${currentSection[0]}:E${currentSection[currentSection.length - 1]})`;
+        data[i][1] = formula;
       }
       if (data[i][2]?.toString().toUpperCase() !== mainCurrency) {
         data[i][2] = mainCurrency;
@@ -1790,14 +1801,14 @@ function updateExchangeData(sheet, mainCurrency, totalRowIndex, rates) {
       currentSection = [];
       continue;
     } else if (rowLabel === "TOTAL:") {
-      data[i][1] = `=SUM(B2:B${totalRowIndex})`;
+      const formula = `=SUM(E3:E${totalRowIndex - 1})`;
+      data[i][1] = formula;
       continue;
     }
 
     if (rowLabel.startsWith("-")) {
       currentSection.push(i + 1);
-
-      const [amount, currency] = parseRowData(data[i]);
+      const [amount, currency] = parseRowData(rowData);
       if (amount && currency) {
         const exchangeRate = rates[currency];
         if (exchangeRate) {
